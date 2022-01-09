@@ -1,0 +1,144 @@
+#!/bin/bash
+VALID_ARGS=$(getopt -o vhRqn:t:f:k: --long version,help,recursive,quiet,namespacetime:filename:kustomize: -- "$@")
+if [[ $? -ne 0 ]]; then
+    exit 1;
+fi
+
+usage() {
+    echo "Check that the resources are deployed in the cluster using kubectl diff"
+    echo "Usage :"
+    echo " -v, --version: Version of kubectl-check"
+    echo " -h, --help: This help"
+    echo " -q, --quiet: No stdout on kubectl diff (but stderr still here)"
+    echo " -n [], --namespace []: If present, the namespace scope for this CLI request"
+    echo " -t [], --time []: Max time in second to check that the(s) resource(s) are deployed, if not set the default is 30 (seconds)"
+    echo " -f [], --filename []: Filename, directory, or URL to files contains the configuration to diff"
+    echo " -k [], --kustomize []: Process the kustomization directory. This flag can't be used together with -f or -R."
+    echo " -R [], --recursive []: Process the directory used in -f, --filename recursively. Useful when you want to manage related manifests organized within the same directory."
+}
+
+eval set -- "$VALID_ARGS"
+while [ : ]; do
+  case "$1" in
+    -v | --version)
+        echo "0.0.1"
+        exit 0
+        ;;
+    -h | --help)
+        usage
+        exit 0
+        ;;
+    -q | --quiet )
+        _quiet=1
+        shift
+        ;;
+    -n | --namespace )
+        _namespace=$2
+        shift
+        shift
+        ;;
+    -f | --filename )
+        if [[ -f $2 || -d $2 ]]
+        then
+            _filename=$2
+        else
+            echo "filename option must be a file or a dir $2"
+            exit 3
+        fi
+        shift
+        shift
+        ;;
+    -t | --time)
+        if [[ $2 == +([0-9]) ]]
+        then
+            _time=$2
+        else
+            echo "time option must be an int is $2"
+            exit 3
+        fi
+        shift
+        shift
+        ;;
+    -k | --kustomize )
+        if [[ -f $2 || -d $2 ]]
+        then
+            _kustomize=$2
+        else
+            echo "kustomize option must be a file or a dir $2"
+            exit 3
+        fi
+        shift
+        shift
+        ;;
+    -R | --recursive )
+        _recursive="-R"
+        shift
+        ;;
+    --) shift
+        break 
+        ;;
+  esac
+done
+
+
+# Check options are valid
+if [[ ! -z ${_kustomize+x} ]] && [[ ! -z ${_recursive+x} || ! -z ${_filename+x} ]]
+then 
+    echo "kustomize flag can't be used together with -f or -R. (see help)"
+    exit 3
+fi
+
+if [[ -z ${_kustomize+x} ]] && [[ -z ${_filename+x} ]]
+then 
+    echo "need to speficy resource to check with -k or -f (see help)"
+    exit 3
+fi
+
+if [[ ! -z ${_recursive+x} ]] && [[ -z ${_filename+x} ]]
+then 
+    echo "recursive flag is used with -f (or --filename) (see help)"
+    exit 3
+fi
+
+# Prepare args for kubectl diff
+if [[ ! -z ${_namespace+x} ]]
+then 
+    ARGS="-n $_namespace"
+fi
+
+if [[ ! -z ${_filename+x} ]]
+then 
+    ARGS="$ARGS -f $_filename"
+else
+    ARGS="$ARGS -k $_kustomize"
+fi
+
+ARGS="$ARGS $_recursive"
+
+if [[ -z ${_time+x} ]]
+then 
+    echo "no timeout to check resources, use 30s by default"
+    _time=30
+fi
+
+# Test kubectl diff until time out or ok
+echo "Testing resources with `kubectl diff $ARGS` for a max of $_time s"
+RET=42
+_stop_sec=$(( $(date +%s) + $_time))
+while [ "$_stop_sec" -ge $(date +%s) ]
+do
+    if [[ "x$_quiet" == "x1" ]]
+    then
+        kubectl diff $ARGS 1>/dev/null
+    else
+        kubectl diff $ARGS
+    fi
+    RET=$?
+    if [ "x$RET" == "x0" ]
+    then        
+        exit 0
+    else
+        sleep 1
+    fi
+done
+exit $RET
